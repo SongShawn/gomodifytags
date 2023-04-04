@@ -154,7 +154,7 @@ func parseConfig(args []string) (*config, error) {
 		flagSkipUnexportedFields = flag.Bool("skip-unexported", false, "Skip unexported fields")
 		flagTransform            = flag.String("transform", "snakecase",
 			"Transform adds a transform rule when adding tags."+
-				" Current options: [snakecase, camelcase, lispcase, pascalcase, titlecase, keep]")
+				" Current options: [snakecase, camelcase, lispcase, pascalcase, titlecase, short, keep]")
 		flagSort = flag.Bool("sort", false,
 			"Sort sorts the tags in increasing order according to the key name")
 
@@ -260,7 +260,7 @@ func (c *config) findSelection(node ast.Node) (int, int, error) {
 	}
 }
 
-func (c *config) process(fieldName, tagVal string) (string, error) {
+func (c *config) process(fieldCount int, fieldName, tagVal string) (string, error) {
 	var tag string
 	if tagVal != "" {
 		var err error
@@ -284,7 +284,7 @@ func (c *config) process(fieldName, tagVal string) (string, error) {
 	tags = c.clearTags(tags)
 	tags = c.clearOptions(tags)
 
-	tags, err = c.addTags(fieldName, tags)
+	tags, err = c.addTags(fieldCount, fieldName, tags)
 	if err != nil {
 		return "", err
 	}
@@ -372,13 +372,22 @@ func (c *config) addTagOptions(tags *structtag.Tags) (*structtag.Tags, error) {
 		key := splitted[0]
 		option := strings.Join(splitted[1:], "=")
 
+		// 对于不需要导出的字段，不要增加option
+		if key == "json" {
+			if jsonTag, err := tags.Get(key); err == nil {
+				if jsonTag.Name == "-" {
+					break
+				}
+			}
+		}
+
 		tags.AddOptions(key, option)
 	}
 
 	return tags, nil
 }
 
-func (c *config) addTags(fieldName string, tags *structtag.Tags) (*structtag.Tags, error) {
+func (c *config) addTags(fieldCount int, fieldName string, tags *structtag.Tags) (*structtag.Tags, error) {
 	if c.add == nil || len(c.add) == 0 {
 		return tags, nil
 	}
@@ -427,6 +436,8 @@ func (c *config) addTags(fieldName string, tags *structtag.Tags) (*structtag.Tag
 		name = strings.Join(titled, " ")
 	case "keep":
 		name = fieldName
+	case "short":
+		name = genTagShortName(fieldCount)
 	default:
 		unknown = true
 	}
@@ -716,6 +727,23 @@ func isPublicName(name string) bool {
 	return false
 }
 
+var (
+	shortNameTmpl     = []byte("abcdefghijklmnopqrstuvwxyz")
+	shortNameTmpl2    = []byte("0123456789abcdefghijklmnopqrstuvwxyz")
+	shortNameTmplLen  = len(shortNameTmpl)
+	shortNameTmpl2Len = len(shortNameTmpl2)
+)
+
+func genTagShortName(index int) string {
+	if index < shortNameTmplLen {
+		return string(shortNameTmpl[index])
+	}
+	i := (index - shortNameTmplLen) / shortNameTmpl2Len
+	j := (index - shortNameTmplLen) % shortNameTmpl2Len
+	fmt.Println(index, i, j)
+	return fmt.Sprintf("%c%c", shortNameTmpl[i], shortNameTmpl2[j])
+}
+
 // rewrite rewrites the node for structs between the start and end
 // positions
 func (c *config) rewrite(node ast.Node, start, end int) (ast.Node, error) {
@@ -726,6 +754,8 @@ func (c *config) rewrite(node ast.Node, start, end int) (ast.Node, error) {
 		if !ok {
 			return true
 		}
+
+		tagCount := 0
 
 		for _, f := range x.Fields.List {
 			line := c.fset.Position(f.Pos()).Line
@@ -765,7 +795,7 @@ func (c *config) rewrite(node ast.Node, start, end int) (ast.Node, error) {
 				f.Tag = &ast.BasicLit{}
 			}
 
-			res, err := c.process(fieldName, f.Tag.Value)
+			res, err := c.process(tagCount, fieldName, f.Tag.Value)
 			if err != nil {
 				errs.Append(fmt.Errorf("%s:%d:%d:%s",
 					c.fset.Position(f.Pos()).Filename,
@@ -776,6 +806,7 @@ func (c *config) rewrite(node ast.Node, start, end int) (ast.Node, error) {
 			}
 
 			f.Tag.Value = res
+			tagCount++
 		}
 
 		return true
